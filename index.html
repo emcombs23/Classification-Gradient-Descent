@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sigmoid Fit with Gradient Descent</title>
+  <style>
+    body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial; max-width: 900px; margin: 32px auto; padding: 0 16px; color: #111; }
+    h1 { font-size: 1.4rem; }
+    label { display:block; margin: 8px 0 4px; }
+    input[type="number"] { padding:6px; width:150px; }
+    textarea { width:100%; height:200px; font-family: monospace; padding:8px }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    button { padding:8px 12px; cursor:pointer }
+    pre { background:#f6f8fa; padding:12px; overflow:auto }
+    .status { margin-top:12px; }
+    table { border-collapse:collapse; width:100%; margin-top:12px }
+    th,td { border:1px solid #ddd; padding:6px; text-align:left }
+    .small { font-size:0.9rem; color:#555 }
+  </style>
+</head>
+<body>
+  <h1>Fit a Sigmoid with Gradient Descent (vanilla JS)</h1>
+
+  <p class="small">Model: ŷ = 1 / (1 + e<sup>-(a*x + b)</sup>) — we fit parameters a and b for the sigmoid y = sigmoid(a*x + b).</p>
+
+  <div>
+    <label for="lr">Learning rate</label>
+    <input id="lr" type="number" step="any" value="0.1" />
+  </div>
+
+  <div>
+    <label for="epochs">Epochs</label>
+    <input id="epochs" type="number" value="500" />
+  </div>
+
+  <div>
+    <label for="csv">Paste CSV data (two columns: x,y). Accepts header or no header. y should be 0 or 1. The model is ŷ = 1/(1+e<sup>-(a*x+b)</sup>).</label>
+    <textarea id="csv" placeholder="x,y\n1.0,0\n2.3,1\n..."></textarea>
+  </div>
+
+  <div class="row" style="margin-top:8px">
+    <button id="run">Run Gradient Descent</button>
+    <button id="sample">Load sample data</button>
+    <span class="small">Progress and messages appear below.</span>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div id="results"></div>
+
+  <div style="margin-top:12px">
+    <label for="fullcsv">All epoch updates (CSV: b,a). Each line is the fitted parameters for the model ŷ = 1/(1+e<sup>-(a*x+b)</sup>). You can copy or download the full history (only b and a values, b first).</label>
+    <textarea id="fullcsv" readonly style="height:160px; font-family:monospace"></textarea>
+    <div class="row" style="margin-top:6px">
+      <button id="copyAll" disabled>Copy all to clipboard</button>
+      <button id="download" disabled>Download updates CSV</button>
+    </div>
+  </div>
+
+  <script>
+    // Helpers
+    function parseCSV(text) {
+      // Split lines, remove empty ones
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length);
+      if (lines.length === 0) return {x:[], y:[]};
+
+      const rows = lines.map(line => line.split(/,|\s+/).map(s => s.trim()));
+
+      // If first row contains non-numeric, drop as header
+      const first = rows[0];
+      const firstNumeric = first.every(cell => cell !== '' && !isNaN(Number(cell)));
+      const dataRows = firstNumeric ? rows : rows.slice(1);
+
+      const x = [];
+      const y = [];
+      for (const r of dataRows) {
+        if (r.length < 2) continue;
+        const xv = Number(r[0]);
+        const yv = Number(r[1]);
+        if (!isFinite(xv) || !isFinite(yv)) continue;
+        x.push(xv);
+        y.push(yv);
+      }
+      return {x,y};
+    }
+
+    function sigmoid(z) {
+      // clamp for numerical stability
+      if (z > 50) return 1;
+      if (z < -50) return 0;
+      return 1 / (1 + Math.exp(-z));
+    }
+
+    function computeLoss(preds, y) {
+      let total = 0;
+      for (let i = 0; i < y.length; i++) {
+        const p = Math.min(Math.max(preds[i], 1e-15), 1-1e-15);
+        total += -(y[i]*Math.log(p) + (1-y[i])*Math.log(1-p));
+      }
+      return total / y.length;
+    }
+
+    // Gradient descent for logistic regression (sigmoid(a*x + b))
+    function gradientDescent(x, y, lr, epochs, onEpoch) {
+      const n = x.length;
+      let a = 0;
+      let b = 0;
+      const history = [];
+
+      for (let e = 1; e <= epochs; e++) {
+        const preds = new Array(n);
+        for (let i = 0; i < n; i++) preds[i] = sigmoid(a * x[i] + b);
+
+        // compute gradients
+        let da = 0;
+        let db = 0;
+        for (let i = 0; i < n; i++) {
+          const diff = preds[i] - y[i];
+          da += diff * x[i];
+          db += diff;
+        }
+        da /= n; db /= n;
+
+        // update params
+        a -= lr * da;
+        b -= lr * db;
+
+        const loss = computeLoss(preds, y);
+        history.push({epoch:e, a, b, loss});
+        if (typeof onEpoch === 'function') onEpoch(e, a, b, loss);
+      }
+      return history;
+    }
+
+    function updatesToCSV(history) {
+      // Output b then a per request (no epoch, no loss)
+      const rows = ['b,a'];
+      for (const h of history) rows.push([h.b, h.a].join(','));
+      return rows.join('\n');
+    }
+
+  // UI wiring
+  const runBtn = document.getElementById('run');
+  const downloadBtn = document.getElementById('download');
+  const copyAllBtn = document.getElementById('copyAll');
+  const fullCsvArea = document.getElementById('fullcsv');
+  const csvArea = document.getElementById('csv');
+  const lrInput = document.getElementById('lr');
+  const epochsInput = document.getElementById('epochs');
+  const status = document.getElementById('status');
+  const results = document.getElementById('results');
+
+    let lastHistory = null;
+
+    runBtn.addEventListener('click', () => {
+      status.textContent = '';
+      results.innerHTML = '';
+
+      const lr = Number(lrInput.value);
+      const epochs = Number(epochsInput.value);
+      const csvText = csvArea.value;
+
+      if (!isFinite(lr) || lr <= 0) { status.textContent = 'Please provide a positive learning rate.'; return; }
+      if (!Number.isInteger(epochs) || epochs <= 0) { status.textContent = 'Please provide a positive integer for epochs.'; return; }
+      if (!csvText.trim()) { status.textContent = 'Please paste CSV data with two columns (x,y).'; return; }
+
+      const {x, y} = parseCSV(csvText);
+      if (x.length === 0) { status.textContent = 'No valid numeric rows found in CSV.'; return; }
+      if (x.length !== y.length) { status.textContent = 'Parsed x and y lengths differ. Check CSV.'; return; }
+
+      // validate y values
+      for (let i = 0; i < y.length; i++) {
+        if (!(y[i] === 0 || y[i] === 1)) {
+          status.textContent = 'All y values must be 0 or 1 for logistic fit. Found: ' + y[i];
+          return;
+        }
+      }
+
+      status.textContent = 'Running gradient descent...';
+
+      // run and update progress every so often
+      const updateEvery = Math.max(1, Math.floor(epochs / 100));
+      lastHistory = [];
+      let lastShown = null;
+      const history = gradientDescent(x, y, lr, epochs, (epoch, a, b, loss) => {
+        if (epoch % updateEvery === 0 || epoch === epochs) {
+          status.textContent = `Epoch ${epoch}/${epochs} — loss: ${loss.toExponential(3)} — a=${a.toFixed(4)} b=${b.toFixed(4)}`;
+          lastShown = {epoch,a,b,loss};
+        }
+      });
+
+  lastHistory = history;
+  const allCsv = updatesToCSV(history);
+  if (fullCsvArea) fullCsvArea.value = allCsv;
+  if (copyAllBtn) copyAllBtn.disabled = false;
+  if (downloadBtn) downloadBtn.disabled = false;
+  status.textContent = 'Finished. You can copy the full CSV below or click "Download updates CSV" to save results.';
+
+      // show summary
+      const final = history[history.length - 1];
+      const html = [];
+      html.push(`<div><strong>Final parameters:</strong> a=${final.a.toFixed(6)}, b=${final.b.toFixed(6)}, loss=${final.loss.toExponential(6)}</div>`);
+      html.push('<h3>Last 10 epochs</h3>');
+      html.push('<table><thead><tr><th>epoch</th><th>a</th><th>b</th><th>loss</th></tr></thead><tbody>');
+      const tail = history.slice(-10);
+      for (const h of tail) {
+        html.push(`<tr><td>${h.epoch}</td><td>${h.a.toFixed(6)}</td><td>${h.b.toFixed(6)}</td><td>${h.loss.toExponential(6)}</td></tr>`);
+      }
+      html.push('</tbody></table>');
+      results.innerHTML = html.join('');
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      if (!lastHistory) return;
+      const csv = updatesToCSV(lastHistory);
+      const blob = new Blob([csv], {type: 'text/csv'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'a_b_updates.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    if (copyAllBtn) {
+      copyAllBtn.addEventListener('click', () => {
+        if (!lastHistory) return;
+        const csv = updatesToCSV(lastHistory);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(csv).then(() => {
+            status.textContent = 'Copied full CSV to clipboard.';
+          }).catch(() => {
+            // fallback
+            fullCsvArea.select();
+            document.execCommand('copy');
+            status.textContent = 'Copied full CSV to clipboard (fallback).';
+          });
+        } else {
+          fullCsvArea.select();
+          document.execCommand('copy');
+          status.textContent = 'Copied full CSV to clipboard (fallback).';
+        }
+      });
+    }
+
+    document.getElementById('sample').addEventListener('click', () => {
+      // create sample data using true a=2, b=-1, then threshold
+      const trueA = 2;
+      const trueB = -1;
+      const rows = ['x,y'];
+      for (let i = 0; i < 60; i++) {
+        const x = (Math.random() * 8) - 2; // -2..6
+        const p = 1 / (1 + Math.exp(-(trueA * x + trueB)));
+        const y = Math.random() < p ? 1 : 0;
+        rows.push(`${x.toFixed(4)},${y}`);
+      }
+      csvArea.value = rows.join('\n');
+      status.textContent = 'Sample data loaded.';
+    });
+
+    // small convenience: pre-load a tiny example
+    csvArea.value = 'x,y\n-3,0\n-2,0\n-1,0\n0,0\n1,1\n2,1\n3,1\n4,1';
+  </script>
+</body>
+</html>
